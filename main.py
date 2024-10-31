@@ -64,7 +64,7 @@ def main():
                         send_message(
                             TOKEN,
                             chat_id,
-                            "Hey, Sell Your Coins Here",
+                            "Welcome to Pi Traders Official. Sell Your Coins Here",
                             keyboard
                         )
                         
