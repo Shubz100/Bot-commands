@@ -64,11 +64,10 @@ def main():
                         send_message(
                             TOKEN,
                             chat_id,
-                            "📢 Discover the Best Place to Trade Your Pi Coins!
-
+                            "Discover the Best Place to Trade Your Pi Coins!
 Join our Official Telegram Miniapp to start trading Pi coins instantly!
-✅ Sell with competitive rates
-✅ Start trading with as little as 1 Pi
+-Sell with competitive rates
+-Start trading with as little as 1 Pi
 
 Don’t miss out on the best offers. Join now and make the most of your Pi coins!
 ",
