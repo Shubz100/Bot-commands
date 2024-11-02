@@ -41,7 +41,7 @@ def check_and_send_messages():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     db = get_db_connection()
     
-    if db is None:  # Changed from 'if not db:' to 'if db is None:'
+    if not db:
         return
     
     try:
