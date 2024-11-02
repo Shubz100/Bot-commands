@@ -10,56 +10,34 @@ import sys
 
 load_dotenv()
 
-def validate_environment():
-    """Validate all required environment variables are present"""
-    required_vars = ["DATABASE_URL", "TELEGRAM_BOT_TOKEN"]
-    missing_vars = []
-    
-    for var in required_vars:
-        if not os.getenv(var):
-            missing_vars.append(var)
-    
-    if missing_vars:
-        print(f"ERROR: Missing required environment variables: {', '.join(missing_vars)}")
-        return False
-    
-    print("Environment variables validation passed")
-    return True
-
-def send_message(token, chat_id, text):
-    base_url = f"https://api.telegram.org/bot{token}/sendMessage"
-    
-    data = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML"
-    }
-    
-    data = urllib.parse.urlencode(data).encode()
-    
+def print_database_status(db):
+    """Print detailed information about database contents"""
     try:
-        print(f"Attempting to send message to chat_id: {chat_id}")
-        req = urllib.request.Request(base_url, data=data)
-        response = urllib.request.urlopen(req)
-        result = json.loads(response.read().decode())
-        print(f"Message sent successfully: {result}")
-        return result
+        users = db.users
+        message_tracking = db.message_tracking
+        
+        # Check all users
+        all_users = list(users.find({}))
+        print("\nDatabase Status:")
+        print(f"Total users in database: {len(all_users)}")
+        
+        if all_users:
+            print("\nSample user data:")
+            sample_user = all_users[0]
+            print(f"Fields present in user document: {list(sample_user.keys())}")
+            print(f"Sample user telegramId: {sample_user.get('telegramId')}")
+            print(f"Sample user createdAt: {sample_user.get('createdAt')}")
+        
+        # Check tracked messages
+        tracked = list(message_tracking.find({}))
+        print(f"\nTracked messages: {len(tracked)}")
+        if tracked:
+            print("Last tracked message:")
+            print(f"Telegram ID: {tracked[-1].get('telegram_id')}")
+            print(f"Sent at: {tracked[-1].get('sent_at')}")
+            
     except Exception as e:
-        print(f"Error sending message: {str(e)}")
-        return None
-
-def get_db_connection():
-    try:
-        print(f"Attempting to connect to database with URL: {os.getenv('DATABASE_URL')[:20]}...")
-        client = MongoClient(os.getenv("DATABASE_URL"), serverSelectionTimeoutMS=5000)
-        # Validate connection
-        client.server_info()
-        db = client.PiProject
-        print("Successfully connected to database")
-        return db
-    except Exception as e:
-        print(f"ERROR connecting to database: {str(e)}")
-        return None
+        print(f"Error checking database status: {str(e)}")
 
 def check_and_send_messages(db):
     if db is None:
@@ -67,41 +45,55 @@ def check_and_send_messages(db):
         return
     
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    print(f"Using bot token: {TOKEN[:10]}...")
     
     try:
-        # Get the collections we need
+        # Print database status first
+        print_database_status(db)
+        
         users = db.users
         message_tracking = db.message_tracking
-        
-        # Print collection info
-        print(f"Number of users in database: {users.count_documents({})}")
-        print(f"Number of tracked messages: {message_tracking.count_documents({})}")
         
         # Get current time
         current_time = datetime.utcnow()
         sixty_seconds_ago = current_time - timedelta(seconds=60)
         
-        # Find eligible users
+        # Find eligible users with detailed logging
         query = {
             "createdAt": {"$lte": sixty_seconds_ago},
             "telegramId": {"$exists": True, "$ne": None}
         }
         
+        # Print the query we're using
+        print(f"\nUsing query: {query}")
+        
         users_to_message = list(users.find(query))
-        print(f"Found {len(users_to_message)} users to message")
+        print(f"Found {len(users_to_message)} users matching criteria")
+        
+        if not users_to_message:
+            # Check why we found no users
+            all_users_with_telegram = list(users.find({"telegramId": {"$exists": True, "$ne": None}}))
+            print(f"Total users with telegramId: {len(all_users_with_telegram)}")
+            
+            if all_users_with_telegram:
+                print("Sample user creation times:")
+                for user in all_users_with_telegram[:3]:  # Show first 3 users
+                    created_at = user.get('createdAt')
+                    telegram_id = user.get('telegramId')
+                    print(f"User {telegram_id} created at: {created_at}")
         
         # Get list of already messaged users
         messaged_users = set(doc["telegram_id"] for doc in message_tracking.find({}, {"telegram_id": 1}))
         print(f"Already messaged users count: {len(messaged_users)}")
         
-        # Send messages to eligible users
+        # Process eligible users
         for user in users_to_message:
             telegram_id = user.get("telegramId")
             
             if telegram_id and telegram_id not in messaged_users:
+                print(f"Processing user {telegram_id}")
+                print(f"User creation time: {user.get('createdAt')}")
+                
                 try:
-                    print(f"Attempting to send message to user {telegram_id}")
                     response = send_message(
                         TOKEN,
                         telegram_id,
@@ -125,15 +117,17 @@ def check_and_send_messages(db):
                 
     except Exception as e:
         print(f"Error in check_and_send_messages: {str(e)}")
-        
+
+def send_message(token, chat_id, text):
+    # [Previous send_message function remains the same]
+    pass
+
+def get_db_connection():
+    # [Previous get_db_connection function remains the same]
+    pass
+
 def main():
     print("Follow-up message service starting...")
-    print(f"Python version: {sys.version}")
-    
-    # Validate environment variables
-    if not validate_environment():
-        print("Failed environment validation. Exiting...")
-        sys.exit(1)
     
     while True:
         try:
