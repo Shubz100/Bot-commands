@@ -31,60 +31,68 @@ def send_message(token, chat_id, text):
 def get_db_connection():
     try:
         client = MongoClient(os.getenv("DATABASE_URL"))
-        db = client.PiProject  # Database name from your URL
-        return db
+        return client.PiProject  # Database name from your URL
     except Exception as e:
         print(f"Error connecting to database: {e}")
         return None
 
-def check_and_send_messages():
-    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    db = get_db_connection()
-    
-    if not db:
+def check_and_send_messages(db):
+    if db is None:  # Proper way to check if db is None
+        print("Database connection is not available")
         return
     
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not TOKEN:
+        print("Telegram bot token not found")
+        return
+        
     try:
         # Get the collections we need
         users = db.users  # Collection for users
         message_tracking = db.message_tracking  # Collection for tracking messages
         
-        # Find users who haven't been processed yet
+        # Get current time
         current_time = datetime.utcnow()
-        ten_seconds_ago = current_time - timedelta(seconds=60)  # Changed from 5 hours to 10 seconds
+        sixty_seconds_ago = current_time - timedelta(seconds=60)
         
-        # Find users who were created more than 10 seconds ago and haven't received the message
-        users_to_message = users.find({
-            "createdAt": {"$lte": ten_seconds_ago},
-            "telegramId": {
-                "$nin": [
-                    doc["telegram_id"] 
-                    for doc in message_tracking.find({}, {"telegram_id": 1})
-                ]
-            }
-        })
+        # Get list of already messaged users
+        messaged_users = set(doc["telegram_id"] for doc in message_tracking.find({}, {"telegram_id": 1}))
         
-        # Send messages and update tracking
+        # Find eligible users
+        query = {
+            "createdAt": {"$lte": sixty_seconds_ago},
+            "telegramId": {"$exists": True, "$ne": None}
+        }
+        
+        users_to_message = users.find(query)
+        
+        # Send messages to eligible users
         for user in users_to_message:
-            try:
-                telegram_id = user.get("telegramId")
-                if telegram_id:
-                    send_message(
+            telegram_id = user.get("telegramId")
+            
+            if telegram_id and telegram_id not in messaged_users:
+                try:
+                    response = send_message(
                         TOKEN,
                         telegram_id,
                         "Afraid of Scams? So can sell as low as 1Pi"
                     )
                     
-                    # Record that we've sent the message
-                    message_tracking.insert_one({
-                        "telegram_id": telegram_id,
-                        "sent_at": current_time
-                    })
-                    
-                    print(f"Sent follow-up message to {telegram_id}")
-                    
-            except Exception as e:
-                print(f"Error processing user {telegram_id}: {e}")
+                    if response:  # Only track if message was sent successfully
+                        message_tracking.insert_one({
+                            "telegram_id": telegram_id,
+                            "sent_at": current_time,
+                            "success": True
+                        })
+                        print(f"Successfully sent follow-up message to {telegram_id}")
+                    else:
+                        print(f"Failed to send message to {telegram_id}")
+                        
+                except Exception as e:
+                    print(f"Error sending message to user {telegram_id}: {e}")
+                
+                # Add small delay between messages to avoid rate limiting
+                time.sleep(0.5)
                 
     except Exception as e:
         print(f"Error in check_and_send_messages: {e}")
@@ -94,12 +102,14 @@ def main():
     
     while True:
         try:
-            check_and_send_messages()
+            # Get database connection
+            db = get_db_connection()
+            check_and_send_messages(db)
         except Exception as e:
             print(f"Error in main loop: {e}")
         
-        # Check every 2 seconds instead of every minute
-        time.sleep(30)  # Changed from 60 to 2 seconds
+        # Sleep for 30 seconds before next check
+        time.sleep(30)
 
 if __name__ == "__main__":
     main()
