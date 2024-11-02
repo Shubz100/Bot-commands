@@ -96,7 +96,7 @@ def check_and_send_messages(db):
                     response = send_message(
                         TOKEN,
                         telegram_id,
-                        "Afraid of Scams? So can sell as low as 1Pi"
+                        "Worried about scams? Trade with confidence – start with as little as 1 Pi!"
                     )
                     
                     if response:
