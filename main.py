@@ -62,7 +62,7 @@ def check_and_send_messages(db):
         
         # Get current time
         current_time = datetime.utcnow()
-        sixty_seconds_ago = current_time - timedelta(seconds=60)
+        sixty_seconds_ago = current_time - timedelta(seconds=18000)
         
         # Find eligible users with detailed logging
         query = {
@@ -135,8 +135,8 @@ def main():
             print(f"Error in main loop: {str(e)}")
             print("Waiting before retry...")
         
-        print("Sleeping for 30 seconds...")
-        time.sleep(30)
+        print("Sleeping for 3600 seconds...")
+        time.sleep(3600)
 
 if __name__ == "__main__":
     main()
