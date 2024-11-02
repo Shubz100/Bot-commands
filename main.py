@@ -29,32 +29,41 @@ def send_message(token, chat_id, text):
         return None
 
 def get_db_connection():
+    connection_string = os.getenv("DATABASE_URL")
+    if not connection_string:
+        print("Error: DATABASE_URL environment variable not set")
+        return None
+    
     try:
-        client = MongoClient(os.getenv("DATABASE_URL"))
-        db = client.PiProject  # Database name from your URL
-        return db
+        client = MongoClient(connection_string)
+        # Test the connection
+        client.admin.command('ping')
+        return client.get_database()  # This will get the database name from the connection string
     except Exception as e:
         print(f"Error connecting to database: {e}")
         return None
 
 def check_and_send_messages():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    db = get_db_connection()
+    if not TOKEN:
+        print("Error: TELEGRAM_BOT_TOKEN environment variable not set")
+        return
     
-    if not db:
+    db = get_db_connection()
+    if db is None:  # Explicitly check for None
+        print("Failed to connect to database")
         return
     
     try:
-        # Get the collections we need
-        users = db.users  # Collection for users
-        message_tracking = db.message_tracking  # Collection for tracking messages
+        # Get the collections
+        users = db.User  # Changed to match Prisma schema collection name
+        message_tracking = db.message_tracking
         
-        # Find users who haven't been processed yet
         current_time = datetime.utcnow()
-        ten_seconds_ago = current_time - timedelta(seconds=10)  # Changed from 5 hours to 10 seconds
+        ten_seconds_ago = current_time - timedelta(seconds=10)
         
-        # Find users who were created more than 10 seconds ago and haven't received the message
-        users_to_message = users.find({
+        # Find eligible users
+        users_to_message = list(users.find({
             "createdAt": {"$lte": ten_seconds_ago},
             "telegramId": {
                 "$nin": [
@@ -62,29 +71,29 @@ def check_and_send_messages():
                     for doc in message_tracking.find({}, {"telegram_id": 1})
                 ]
             }
-        })
+        }))
         
-        # Send messages and update tracking
         for user in users_to_message:
-            try:
-                telegram_id = user.get("telegramId")
-                if telegram_id:
-                    send_message(
-                        TOKEN,
-                        telegram_id,
-                        "Afraid of Scams? So can sell as low as 1Pi"
-                    )
-                    
-                    # Record that we've sent the message
+            telegram_id = user.get("telegramId")
+            if telegram_id:
+                message_sent = send_message(
+                    TOKEN,
+                    telegram_id,
+                    "Afraid of scams? Why not try selling just 1Pi"  # Fixed typo in message
+                )
+                
+                if message_sent:
+                    # Only track if message was sent successfully
                     message_tracking.insert_one({
                         "telegram_id": telegram_id,
                         "sent_at": current_time
                     })
-                    
-                    print(f"Sent follow-up message to {telegram_id}")
-                    
-            except Exception as e:
-                print(f"Error processing user {telegram_id}: {e}")
+                    print(f"Successfully sent follow-up message to {telegram_id}")
+                else:
+                    print(f"Failed to send message to {telegram_id}")
+                
+                # Add a small delay between messages to avoid rate limiting
+                time.sleep(0.1)
                 
     except Exception as e:
         print(f"Error in check_and_send_messages: {e}")
@@ -97,9 +106,11 @@ def main():
             check_and_send_messages()
         except Exception as e:
             print(f"Error in main loop: {e}")
+            # Add a longer delay if there's an error
+            time.sleep(5)
+            continue
         
-        # Check every 2 seconds instead of every minute
-        time.sleep(2)  # Changed from 60 to 2 seconds
+        time.sleep(2)
 
 if __name__ == "__main__":
     main()
