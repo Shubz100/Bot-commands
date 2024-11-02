@@ -18,127 +18,76 @@ def send_message(token, chat_id, text):
         "parse_mode": "HTML"
     }
     
+    data = urllib.parse.urlencode(data).encode()
+    
     try:
-        # First check if the chat exists and bot can message the user
-        get_chat_url = f"https://api.telegram.org/bot{token}/getChat"
-        chat_data = urllib.parse.urlencode({"chat_id": chat_id}).encode()
-        chat_req = urllib.request.Request(get_chat_url, data=chat_data)
-        
-        try:
-            urllib.request.urlopen(chat_req)
-        except urllib.error.HTTPError as e:
-            if e.code in [400, 403]:
-                print(f"Chat {chat_id} is not accessible (user may have blocked the bot or never started it)")
-                return False
-            raise e
-
-        # If chat exists, try to send the message
-        data = urllib.parse.urlencode(data).encode()
         req = urllib.request.Request(base_url, data=data)
         response = urllib.request.urlopen(req)
         return json.loads(response.read().decode())
-    
-    except urllib.error.HTTPError as e:
-        print(f"Error sending message to {chat_id}: HTTP Error {e.code}: {e.reason}")
-        print(f"Response body: {e.read().decode()}")
-        return False
     except Exception as e:
-        print(f"Unexpected error sending message to {chat_id}: {str(e)}")
-        return False
+        print(f"Error sending message: {e}")
+        return None
 
 def get_db_connection():
-    connection_string = os.getenv("DATABASE_URL")
-    if not connection_string:
-        print("Error: DATABASE_URL environment variable not set")
-        return None
-    
     try:
-        client = MongoClient(connection_string)
-        client.admin.command('ping')
-        return client.get_database()
+        client = MongoClient(os.getenv("DATABASE_URL"))
+        db = client.PiProject  # Database name from your URL
+        return db
     except Exception as e:
         print(f"Error connecting to database: {e}")
         return None
 
 def check_and_send_messages():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not TOKEN:
-        print("Error: TELEGRAM_BOT_TOKEN environment variable not set")
-        return
-    
     db = get_db_connection()
-    if db is None:
-        print("Failed to connect to database")
+    
+    if not db:
         return
     
     try:
-        users = db.User
-        message_tracking = db.message_tracking
+        # Get the collections we need
+        users = db.users  # Collection for users
+        message_tracking = db.message_tracking  # Collection for tracking messages
         
-        # Ensure message_tracking collection exists
-        if "message_tracking" not in db.list_collection_names():
-            db.create_collection("message_tracking")
-        
+        # Find users who haven't been processed yet
         current_time = datetime.utcnow()
-        ten_seconds_ago = current_time - timedelta(seconds=10)
+        ten_seconds_ago = current_time - timedelta(seconds=60)  # Changed from 5 hours to 10 seconds
         
-        # Get list of already messaged users
-        sent_to_users = set(
-            doc["telegram_id"] 
-            for doc in message_tracking.find({}, {"telegram_id": 1})
-        )
-        
-        # Find eligible users and explicitly convert cursor to list
-        users_query = {
+        # Find users who were created more than 10 seconds ago and haven't received the message
+        users_to_message = users.find({
             "createdAt": {"$lte": ten_seconds_ago},
-            "telegramId": {"$exists": True, "$ne": None}
-        }
+            "telegramId": {
+                "$nin": [
+                    doc["telegram_id"] 
+                    for doc in message_tracking.find({}, {"telegram_id": 1})
+                ]
+            }
+        })
         
-        for user in users.find(users_query):
-            telegram_id = user.get("telegramId")
-            
-            # Skip if already messaged
-            if telegram_id in sent_to_users:
-                continue
-                
-            # Skip invalid telegram_ids
-            if not isinstance(telegram_id, (int, str)) or str(telegram_id).strip() == "":
-                print(f"Skipping invalid telegram_id: {telegram_id}")
-                continue
-            
-            print(f"Attempting to send message to user {telegram_id}")
-            
-            # Try to send message
-            message_sent = send_message(
-                TOKEN,
-                telegram_id,
-                "Afraid of scams? Why not try selling just 1Pi"
-            )
-            
-            if message_sent:
-                # Track successful message
-                message_tracking.insert_one({
-                    "telegram_id": telegram_id,
-                    "sent_at": current_time,
-                    "status": "success"
-                })
-                print(f"Successfully sent follow-up message to {telegram_id}")
-            else:
-                # Track failed attempt
-                message_tracking.insert_one({
-                    "telegram_id": telegram_id,
-                    "sent_at": current_time,
-                    "status": "failed"
-                })
-                print(f"Failed to send message to {telegram_id}")
-            
-            # Add delay between messages
-            time.sleep(0.5)
+        # Send messages and update tracking
+        for user in users_to_message:
+            try:
+                telegram_id = user.get("telegramId")
+                if telegram_id:
+                    send_message(
+                        TOKEN,
+                        telegram_id,
+                        "Afraid of Scams? So can sell as low as 1Pi"
+                    )
+                    
+                    # Record that we've sent the message
+                    message_tracking.insert_one({
+                        "telegram_id": telegram_id,
+                        "sent_at": current_time
+                    })
+                    
+                    print(f"Sent follow-up message to {telegram_id}")
+                    
+            except Exception as e:
+                print(f"Error processing user {telegram_id}: {e}")
                 
     except Exception as e:
         print(f"Error in check_and_send_messages: {e}")
-        if hasattr(e, 'response'):
-            print(f"Response content: {e.response.content}")
 
 def main():
     print("Follow-up message service started...")
@@ -148,10 +97,9 @@ def main():
             check_and_send_messages()
         except Exception as e:
             print(f"Error in main loop: {e}")
-            time.sleep(5)
-            continue
         
-        time.sleep(2)
+        # Check every 2 seconds instead of every minute
+        time.sleep(30)  # Changed from 60 to 2 seconds
 
 if __name__ == "__main__":
     main()
