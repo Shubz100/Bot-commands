@@ -18,15 +18,33 @@ def send_message(token, chat_id, text):
         "parse_mode": "HTML"
     }
     
-    data = urllib.parse.urlencode(data).encode()
-    
     try:
+        # First check if the chat exists and bot can message the user
+        get_chat_url = f"https://api.telegram.org/bot{token}/getChat"
+        chat_data = urllib.parse.urlencode({"chat_id": chat_id}).encode()
+        chat_req = urllib.request.Request(get_chat_url, data=chat_data)
+        
+        try:
+            urllib.request.urlopen(chat_req)
+        except urllib.error.HTTPError as e:
+            if e.code in [400, 403]:
+                print(f"Chat {chat_id} is not accessible (user may have blocked the bot or never started it)")
+                return False
+            raise e
+
+        # If chat exists, try to send the message
+        data = urllib.parse.urlencode(data).encode()
         req = urllib.request.Request(base_url, data=data)
         response = urllib.request.urlopen(req)
         return json.loads(response.read().decode())
+    
+    except urllib.error.HTTPError as e:
+        print(f"Error sending message to {chat_id}: HTTP Error {e.code}: {e.reason}")
+        print(f"Response body: {e.read().decode()}")
+        return False
     except Exception as e:
-        print(f"Error sending message: {e}")
-        return None
+        print(f"Unexpected error sending message to {chat_id}: {str(e)}")
+        return False
 
 def get_db_connection():
     connection_string = os.getenv("DATABASE_URL")
@@ -36,9 +54,8 @@ def get_db_connection():
     
     try:
         client = MongoClient(connection_string)
-        # Test the connection
         client.admin.command('ping')
-        return client.get_database()  # This will get the database name from the connection string
+        return client.get_database()
     except Exception as e:
         print(f"Error connecting to database: {e}")
         return None
@@ -50,53 +67,78 @@ def check_and_send_messages():
         return
     
     db = get_db_connection()
-    if db is None:  # Explicitly check for None
+    if db is None:
         print("Failed to connect to database")
         return
     
     try:
-        # Get the collections
-        users = db.User  # Changed to match Prisma schema collection name
+        users = db.User
         message_tracking = db.message_tracking
+        
+        # Ensure message_tracking collection exists
+        if "message_tracking" not in db.list_collection_names():
+            db.create_collection("message_tracking")
         
         current_time = datetime.utcnow()
         ten_seconds_ago = current_time - timedelta(seconds=10)
         
-        # Find eligible users
-        users_to_message = list(users.find({
-            "createdAt": {"$lte": ten_seconds_ago},
-            "telegramId": {
-                "$nin": [
-                    doc["telegram_id"] 
-                    for doc in message_tracking.find({}, {"telegram_id": 1})
-                ]
-            }
-        }))
+        # Get list of already messaged users
+        sent_to_users = set(
+            doc["telegram_id"] 
+            for doc in message_tracking.find({}, {"telegram_id": 1})
+        )
         
-        for user in users_to_message:
+        # Find eligible users and explicitly convert cursor to list
+        users_query = {
+            "createdAt": {"$lte": ten_seconds_ago},
+            "telegramId": {"$exists": True, "$ne": None}
+        }
+        
+        for user in users.find(users_query):
             telegram_id = user.get("telegramId")
-            if telegram_id:
-                message_sent = send_message(
-                    TOKEN,
-                    telegram_id,
-                    "Afraid of scams? Why not try selling just 1Pi"  # Fixed typo in message
-                )
+            
+            # Skip if already messaged
+            if telegram_id in sent_to_users:
+                continue
                 
-                if message_sent:
-                    # Only track if message was sent successfully
-                    message_tracking.insert_one({
-                        "telegram_id": telegram_id,
-                        "sent_at": current_time
-                    })
-                    print(f"Successfully sent follow-up message to {telegram_id}")
-                else:
-                    print(f"Failed to send message to {telegram_id}")
-                
-                # Add a small delay between messages to avoid rate limiting
-                time.sleep(0.1)
+            # Skip invalid telegram_ids
+            if not isinstance(telegram_id, (int, str)) or str(telegram_id).strip() == "":
+                print(f"Skipping invalid telegram_id: {telegram_id}")
+                continue
+            
+            print(f"Attempting to send message to user {telegram_id}")
+            
+            # Try to send message
+            message_sent = send_message(
+                TOKEN,
+                telegram_id,
+                "Afraid of scams? Why not try selling just 1Pi"
+            )
+            
+            if message_sent:
+                # Track successful message
+                message_tracking.insert_one({
+                    "telegram_id": telegram_id,
+                    "sent_at": current_time,
+                    "status": "success"
+                })
+                print(f"Successfully sent follow-up message to {telegram_id}")
+            else:
+                # Track failed attempt
+                message_tracking.insert_one({
+                    "telegram_id": telegram_id,
+                    "sent_at": current_time,
+                    "status": "failed"
+                })
+                print(f"Failed to send message to {telegram_id}")
+            
+            # Add delay between messages
+            time.sleep(0.5)
                 
     except Exception as e:
         print(f"Error in check_and_send_messages: {e}")
+        if hasattr(e, 'response'):
+            print(f"Response content: {e.response.content}")
 
 def main():
     print("Follow-up message service started...")
@@ -106,7 +148,6 @@ def main():
             check_and_send_messages()
         except Exception as e:
             print(f"Error in main loop: {e}")
-            # Add a longer delay if there's an error
             time.sleep(5)
             continue
         
