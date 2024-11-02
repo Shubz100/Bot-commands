@@ -10,100 +10,126 @@ import sys
 
 load_dotenv()
 
-def validate_mongo_url():
-    """Validate MongoDB URL structure"""
-    url = os.getenv("DATABASE_URL", "")
-    print("Checking MongoDB URL format...")
+def send_message(token, chat_id, text):
+    base_url = f"https://api.telegram.org/bot{token}/sendMessage"
     
-    if not url:
-        print("ERROR: DATABASE_URL is empty")
-        return False
-        
-    if not url.startswith("mongodb+srv://"):
-        print("ERROR: DATABASE_URL should start with 'mongodb+srv://'")
-        return False
-        
-    # Check if URL contains username and password
+    data = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    
+    data = urllib.parse.urlencode(data).encode()
+    
     try:
-        # Print first few characters of username for verification
-        username = url.split("//")[1].split(":")[0]
-        print(f"Found username: {username[:4]}***")
-        
-        # Check if password is present (don't print it)
-        if "@" not in url:
-            print("ERROR: No password found in URL")
-            return False
-            
-        # Check if database name is present
-        if "mongodb.net/" not in url:
-            print("ERROR: No database name found in URL")
-            return False
-            
-        print("MongoDB URL format appears valid")
-        return True
-        
+        print(f"Attempting to send message to chat_id: {chat_id}")
+        req = urllib.request.Request(base_url, data=data)
+        response = urllib.request.urlopen(req)
+        result = json.loads(response.read().decode())
+        print(f"Message sent successfully: {result}")
+        return result
     except Exception as e:
-        print(f"ERROR parsing MongoDB URL: {str(e)}")
-        return False
+        print(f"Error sending message: {str(e)}")
+        return None
 
 def get_db_connection():
-    """Establish database connection with detailed error reporting"""
     try:
-        if not validate_mongo_url():
-            return None
-            
-        print("Attempting to connect to MongoDB...")
-        client = MongoClient(
-            os.getenv("DATABASE_URL"),
-            serverSelectionTimeoutMS=5000,
-            connectTimeoutMS=5000,
-            socketTimeoutMS=5000
-        )
-        
-        # Test the connection
-        try:
-            print("Testing connection...")
-            client.admin.command('ping')
-            print("Connection test successful")
-        except Exception as e:
-            print(f"Connection test failed: {str(e)}")
-            return None
-            
+        client = MongoClient(os.getenv("DATABASE_URL"), serverSelectionTimeoutMS=5000)
         db = client.PiProject
+        # Test connection
+        client.admin.command('ping')
         print("Successfully connected to database")
-        
-        # Verify collections exist
-        collections = db.list_collection_names()
-        print(f"Available collections: {collections}")
-        
-        if 'users' not in collections:
-            print("WARNING: 'users' collection not found in database")
-        if 'message_tracking' not in collections:
-            print("WARNING: 'message_tracking' collection not found in database")
-            
         return db
-        
     except Exception as e:
         print(f"ERROR connecting to database: {str(e)}")
-        print("Connection error details:")
-        print(f"Error type: {type(e).__name__}")
-        print(f"Error message: {str(e)}")
         return None
+
+def check_and_send_messages(db):
+    if db is None:
+        print("Database connection is not available")
+        return
+    
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    
+    try:
+        # Get the collections with correct names
+        users = db.User  # Changed from users to User
+        message_tracking = db.message_tracking
+        
+        # Print collection info
+        print(f"Number of users in database: {users.count_documents({})}")
+        print(f"Number of tracked messages: {message_tracking.count_documents({})}")
+        
+        # Get current time
+        current_time = datetime.utcnow()
+        sixty_seconds_ago = current_time - timedelta(seconds=60)
+        
+        # Find eligible users with detailed logging
+        query = {
+            "createdAt": {"$lte": sixty_seconds_ago},
+            "telegramId": {"$exists": True, "$ne": None}
+        }
+        
+        # Print the query we're using
+        print(f"\nChecking for users with query: {query}")
+        
+        users_to_message = list(users.find(query))
+        print(f"Found {len(users_to_message)} users matching criteria")
+        
+        if users_to_message:
+            print("Sample matching user data:")
+            sample_user = users_to_message[0]
+            print(f"Fields present: {list(sample_user.keys())}")
+            print(f"Creation time: {sample_user.get('createdAt')}")
+        
+        # Get list of already messaged users
+        messaged_users = set(doc["telegram_id"] for doc in message_tracking.find({}, {"telegram_id": 1}))
+        print(f"Already messaged users count: {len(messaged_users)}")
+        
+        # Send messages to eligible users
+        for user in users_to_message:
+            telegram_id = user.get("telegramId")
+            
+            if telegram_id and telegram_id not in messaged_users:
+                try:
+                    print(f"Sending message to user {telegram_id}")
+                    response = send_message(
+                        TOKEN,
+                        telegram_id,
+                        "Afraid of Scams? So can sell as low as 1Pi"
+                    )
+                    
+                    if response:
+                        message_tracking.insert_one({
+                            "telegram_id": telegram_id,
+                            "sent_at": current_time,
+                            "success": True
+                        })
+                        print(f"Successfully sent and tracked message to {telegram_id}")
+                    else:
+                        print(f"Failed to send message to {telegram_id}")
+                        
+                except Exception as e:
+                    print(f"Error processing user {telegram_id}: {str(e)}")
+                
+                time.sleep(0.5)
+                
+    except Exception as e:
+        print(f"Error in check_and_send_messages: {str(e)}")
 
 def main():
     print("Follow-up message service starting...")
-    print(f"Python version: {sys.version}")
     
     while True:
         try:
             print("\n--- Starting new check cycle ---")
             db = get_db_connection()
             if db is None:
-                print("Failed to connect to database. Waiting 30 seconds before retry...")
+                print("Failed to connect to database. Waiting before retry...")
                 time.sleep(30)
                 continue
                 
-            # Rest of your code...
+            check_and_send_messages(db)
             
         except Exception as e:
             print(f"Error in main loop: {str(e)}")
